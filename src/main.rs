@@ -1,4 +1,4 @@
-use std::{clone, io::stdin, option, time::Duration};
+use std::time::Duration;
 
 use reqwest::{header, Response};
 use serde_json;
@@ -23,11 +23,11 @@ async fn fetch_repo_page(
     pb.set_style(ProgressStyle::default_spinner().progress_chars("⣾⣽⣻⢿⡿⣟⣯⣷"));
     pb.set_message("Fetching repos...");
 
-    pb.enable_steady_tick(Duration::from_millis(25));
+    pb.enable_steady_tick(Duration::from_millis(100));
 
     let response = reqwest::Client::new()
         .get(&url)
-        .header("User-Agent", "werdl/gh-clone-all")
+        .header("User-Agent", "werdl/githuback")
         .header(
             "Authorization",
             header::HeaderValue::from_str(&auth_token).unwrap(),
@@ -110,7 +110,7 @@ async fn fetch_user_repos(
 }
 
 async fn clone_repo(url: String, path: String, pb: &ProgressBar) -> Result<(), reqwest::Error> {
-    let repo = match Repository::clone(&url, path) {
+    let _ = match Repository::clone(&url, path) {
         Ok(repo) => repo,
         Err(e) => panic!("failed to clone: {}", e),
     };
@@ -124,9 +124,32 @@ async fn clone_repos(
     repos: Vec<(String, String)>,
     path_prefix: String,
 ) -> Result<(), reqwest::Error> {
+    // check if the path exists, create it if it doesn't and fail if it is non-empty
+
+    if let Ok(_) = std::fs::metadata(&path_prefix) {
+        panic!("path exists");
+    }
+    
+    match std::fs::create_dir_all(&path_prefix) {
+        Ok(_) => (),
+        Err(e) => panic!("failed to create directory: {}", e),
+    }
+
     let pb = ProgressBar::new(repos.len() as u64);
-    for (repo, http_url) in repos {
-        clone_repo(http_url, format!("{}/{}", path_prefix, repo), &pb);
+
+    // clone the repos, but all at once
+    let mut handles = vec![];
+
+    for (name, url) in repos {
+        let path = format!("{}/{}", path_prefix, name);
+        let pb = pb.clone();
+        handles.push(tokio::spawn(async move {
+            clone_repo(url, path, &pb).await.unwrap();
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
     }
 
     pb.finish_with_message("Cloned repos");
@@ -144,7 +167,7 @@ struct Options {
     #[arg(short, long, default_value = "")]
     auth_token: String,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     clone: bool,
 }
 
@@ -152,16 +175,13 @@ struct Options {
 async fn main() -> Result<(), reqwest::Error> {
     let options = Options::parse();
 
-    let user = "werdl".to_string();
     let repos = fetch_user_repos(options.user.clone(), options.auth_token).await?;
-    for repo in repos.clone() {
-        println!("{:?}", repo);
-    }
 
-    println!("Found in total {} repos for {}", repos.len(), options.user);
+    println!("Found {} public repos for {}", repos.len(), options.user);
 
     if options.clone {
-        tokio::spawn(clone_repos(repos, options.path_prefix));
+        println!("Cloning repos...");
+        let _ = clone_repos( repos, options.path_prefix).await;
     }
 
     Ok(())
