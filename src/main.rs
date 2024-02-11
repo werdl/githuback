@@ -1,4 +1,4 @@
-use std::{io::stdin, option, time::Duration};
+use std::{clone, io::stdin, option, time::Duration};
 
 use reqwest::{header, Response};
 use serde_json;
@@ -109,18 +109,24 @@ async fn fetch_user_repos(
         .collect::<Vec<(String, String)>>())
 }
 
+async fn clone_repo(url: String, path: String, pb: &ProgressBar) -> Result<(), reqwest::Error> {
+    let repo = match Repository::clone(&url, path) {
+        Ok(repo) => repo,
+        Err(e) => panic!("failed to clone: {}", e),
+    };
+
+    pb.inc(1);
+
+    Ok(())
+}
+
 async fn clone_repos(
     repos: Vec<(String, String)>,
     path_prefix: String,
 ) -> Result<(), reqwest::Error> {
     let pb = ProgressBar::new(repos.len() as u64);
     for (repo, http_url) in repos {
-        pb.inc(1);
-        pb.set_message(format!("Cloning {}...", repo));
-        let repo = match Repository::clone(&http_url, format!("{}/{}", path_prefix, repo)) {
-            Ok(repo) => repo,
-            Err(e) => panic!("failed to clone: {}", e),
-        };
+        clone_repo(http_url, format!("{}/{}", path_prefix, repo), &pb);
     }
 
     pb.finish_with_message("Cloned repos");
@@ -155,7 +161,7 @@ async fn main() -> Result<(), reqwest::Error> {
     println!("Found in total {} repos for {}", repos.len(), options.user);
 
     if options.clone {
-        clone_repos(repos, options.path_prefix).await?;
+        tokio::spawn(clone_repos(repos, options.path_prefix));
     }
 
     Ok(())
